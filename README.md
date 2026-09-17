@@ -1,6 +1,6 @@
 # vibe-result-transforms
 
-Post-processing transforms for `vibe` vision model outputs.
+Post-processing transforms for [`vibe`](https://github.com/DraconicDragon/vibe) vision model outputs.
 
 `vibe` returns complete, raw predictions directly from models. This library handles the downstream filtering, tag cleaning, and enrichment.
 
