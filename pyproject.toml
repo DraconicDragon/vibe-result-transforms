@@ -4,20 +4,21 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vibe-result-transforms"
-version = "0.1.0"
+version = "0.1.1"
 description = "Post-processing and result transform pipeline for vibe vision models."
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "Drac" }]
 requires-python = ">=3.11"
-dependencies = [ #"vibe<1.0.1", 
-    "pydantic>=2.0",
+dependencies = [
+    #"vibe @ git+https://github.com/DraconicDragon/vibe@2406c64663ea2ddaec3b97548398efe28d3052f9", 
+    # keep commented in because would otherwise create weird dependency requirements and not allowing newer versions of vibe even though vrt works with it
+    "pydantic>=2.4.0,<3",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=9.0", "pytest-cov>=4.1", "ruff", "ty"]
+dev = ["pytest>=9.1.1", "pytest-cov>=4.1", "ruff>=0.16.5", "ty>=0.0.76"]
 
-# Explicitly tell Hatchling the package lives at the root
 [tool.hatch.build.targets.wheel]
 packages = ["vibe_result_transforms"]
 
