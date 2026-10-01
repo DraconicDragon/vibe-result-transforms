@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import ClassVar, Self
 
+import numpy as np
 from pydantic import BaseModel, Field
 from vibe.metadata import ModelDescriptor, OutputKind
 from vibe.results import TagEntry, TagResult
@@ -128,8 +129,49 @@ class ScoreThresholds(ResultTransform[TagResult]):
         return target.output.kind == OutputKind.TAGS
 
     def __call__(self, result: TagResult) -> TagResult:
-        filtered_categories: dict[str, list[TagEntry]] = {}
+        # 1. FAST PATH: Filter directly from NumPy arrays without materializing 30,000 throwaway TagEntries
+        if (
+            result._categories is None
+            and result._scores is not None
+            and result._tag_names is not None
+            and result._category_indices is not None
+        ):
+            scores = result._scores
+            names = result._tag_names
+            usable_count = min(len(scores), len(names))
+            filtered_categories: dict[str, list[TagEntry]] = {}
 
+            for cat_name, indices in result._category_indices.items():
+                thresh = self.category_thresholds.get(cat_name, self.threshold)
+                valid_indices = [idx for idx in indices if idx < usable_count]
+                if not valid_indices:
+                    continue
+
+                idx_arr = np.array(valid_indices, dtype=np.int32)
+                cat_scores = scores[idx_arr]
+
+                # Fast C-level boolean mask: only keep indices above threshold!
+                mask = cat_scores >= thresh
+                if not np.any(mask):
+                    continue
+
+                passed_idx = idx_arr[mask]
+                passed_scores = cat_scores[mask]
+
+                # Sort descending
+                sort_order = np.argsort(-passed_scores)
+                sorted_idx = passed_idx[sort_order]
+                sorted_scores = passed_scores[sort_order]
+
+                # ONLY instantiate TagEntry for the surviving tags (~50 objects instead of 30,000!)
+                filtered_categories[cat_name] = [
+                    TagEntry(tag=names[i], score=float(s)) for i, s in zip(sorted_idx, sorted_scores, strict=False)
+                ]
+
+            return TagResult(categories=filtered_categories, extras=dict(result.extras))
+
+        # 2. FALLBACK PATH: If result was already materialized
+        filtered_categories = {}
         for category, entries in result.categories.items():
             thresh = self.category_thresholds.get(category, self.threshold)
             kept = [e for e in entries if e.score >= thresh]
@@ -196,10 +238,61 @@ class TagLevelThresholds(ResultTransform[TagResult]):
         return "ThresholdProvider" in target.capabilities
 
     def __call__(self, result: TagResult) -> TagResult:
-        filtered_categories: dict[str, list[TagEntry]] = {}
+        # 1. FAST PATH: Filter directly from NumPy arrays without materializing 30,000 throwaway TagEntries
+        if (
+            result._categories is None
+            and result._scores is not None
+            and result._tag_names is not None
+            and result._category_indices is not None
+        ):
+            scores = result._scores
+            names = result._tag_names
+            usable_count = min(len(scores), len(names))
+            filtered_categories: dict[str, list[TagEntry]] = {}
 
+            offset = self.offset
+            rel_offset = self.relative_offset
+            has_rel = rel_offset != 0.0
+            thresh_map = self.threshold_map
+            fallback = self.fallback
+
+            for cat_name, indices in result._category_indices.items():
+                valid_indices = [idx for idx in indices if idx < usable_count]
+                if not valid_indices:
+                    continue
+
+                idx_arr = np.array(valid_indices, dtype=np.int32)
+                cat_scores = scores[idx_arr]
+
+                # Sort by score descending first
+                sort_order = np.argsort(-cat_scores)
+                sorted_idx = idx_arr[sort_order]
+                sorted_scores = cat_scores[sort_order]
+
+                kept: list[TagEntry] = []
+                for i, s in zip(sorted_idx, sorted_scores, strict=False):
+                    tag_name = names[i]
+                    score_val = float(s)
+
+                    thresh = thresh_map.get(tag_name, fallback)
+                    if thresh is not None:
+                        thresh += offset
+                        if has_rel:
+                            thresh *= 1.0 + rel_offset
+
+                    # If score passes threshold, ONLY THEN instantiate TagEntry!
+                    if thresh is None or score_val >= thresh:
+                        kept.append(TagEntry(tag=tag_name, score=score_val))
+
+                if kept:
+                    filtered_categories[cat_name] = kept
+
+            return TagResult(categories=filtered_categories, extras=dict(result.extras))
+
+        # 2. FALLBACK PATH: If result was already materialized
+        filtered_categories = {}
         for category, entries in result.categories.items():
-            kept: list[TagEntry] = []
+            kept = []
             for entry in entries:
                 thresh = self.threshold_map.get(entry.tag, self.fallback)
                 if thresh is not None:
